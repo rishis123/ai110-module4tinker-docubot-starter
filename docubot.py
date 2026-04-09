@@ -10,6 +10,12 @@ Core DocuBot class responsible for:
 import os
 import glob
 
+STOP_WORDS = {"where", "is", "the", "a", "an", "how", "what", "why", "does", "do", "i", "in", "of", "to", "it"}
+
+# Minimum number of query words that must match a chunk for it to be returned.
+# Chunks scoring below this are considered lacking meaningful evidence.
+MIN_SCORE = 2
+
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
         """
@@ -22,8 +28,11 @@ class DocuBot:
         # Load documents into memory
         self.documents = self.load_documents()  # List of (filename, text)
 
-        # Build a retrieval index (implemented in Phase 1)
-        self.index = self.build_index(self.documents)
+        # Split documents into paragraph-level chunks
+        self.chunks = self.chunk_documents(self.documents)  # List of (filename, paragraph)
+
+        # Build a retrieval index over chunks
+        self.index = self.build_index(self.chunks)
 
     # -----------------------------------------------------------
     # Document Loading
@@ -45,6 +54,24 @@ class DocuBot:
         return docs
 
     # -----------------------------------------------------------
+    # Chunking
+    # -----------------------------------------------------------
+
+    def chunk_documents(self, documents):
+        """
+        Splits each document into paragraphs (double-newline separated).
+        Returns a flat list of (filename, paragraph) tuples,
+        skipping blank paragraphs.
+        """
+        chunks = []
+        for filename, text in documents:
+            for paragraph in text.split("\n\n"):
+                paragraph = paragraph.strip()
+                if paragraph:
+                    chunks.append((filename, paragraph))
+        return chunks
+
+    # -----------------------------------------------------------
     # Index Construction (Phase 1)
     # -----------------------------------------------------------
 
@@ -64,7 +91,14 @@ class DocuBot:
         ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for i, (_, text) in enumerate(documents):
+            for token in text.lower().split():
+                word = token.strip(".,!?;:\"'()[]{}")
+                if word:
+                    if word not in index:
+                        index[word] = []
+                    if i not in index[word]:
+                        index[word].append(i)
         return index
 
     # -----------------------------------------------------------
@@ -81,8 +115,9 @@ class DocuBot:
         - Count how many appear in the text
         - Return the count as the score
         """
-        # TODO: implement scoring
-        return 0
+        query_words = set(query.lower().split()) - STOP_WORDS
+        text_words = set(text.lower().split())
+        return len(query_words & text_words)
 
     def retrieve(self, query, top_k=3):
         """
@@ -91,8 +126,23 @@ class DocuBot:
 
         Return a list of (filename, text) sorted by score descending.
         """
-        results = []
-        # TODO: implement retrieval logic
+        # Use the index to find candidate chunk indices containing query words
+        query_words = [w.lower().strip(".,!?;:\"'()[]{}") for w in query.split() if w.lower() not in STOP_WORDS]
+        candidate_indices = set()
+        for word in query_words:
+            for idx in self.index.get(word, []):
+                candidate_indices.add(idx)
+
+        # Score each candidate chunk
+        scored = []
+        for i, (filename, text) in enumerate(self.chunks):
+            if i in candidate_indices:
+                score = self.score_document(query, text)
+                if score >= MIN_SCORE:
+                    scored.append((score, filename, text))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = [(filename, text) for _, filename, text in scored]
         return results[:top_k]
 
     # -----------------------------------------------------------
